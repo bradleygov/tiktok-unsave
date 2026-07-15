@@ -18,7 +18,7 @@
 # it stops on its own.
 
 param(
-    [int]$Count         = 270,   # how many videos to unsave
+    [int]$Count         = 500,   # how many videos to unsave
     [int]$AfterClickMs  = 450,   # wait after tapping the bookmark
     [int]$AfterScrollMs = 1800,  # wait for the next video to load
     [int]$StartDelaySec = 6,     # time to position the mouse before start
