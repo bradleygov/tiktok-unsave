@@ -6,8 +6,7 @@
 #   1. Find the GOLD bookmark on the right rail (pixel scan, handles both layouts).
 #   2. Tap SHARE (48 px below the bookmark) -> "Send to" sheet slides up.
 #   3. Tap COPY LINK -> "Link copied" toast, sheet closes itself.
-#   4. Tap the AhaTok floating icon (snapped to either screen edge; its
-#      position is auto-detected at startup) -> it grabs the clipboard link
+#   4. Tap the AhaTok floating icon (left edge) -> it grabs the clipboard link
 #      and downloads the video in the background.
 #   5. Tap the gold bookmark -> video is unsaved (icon turns white).
 #   6. Wheel-scroll one tick -> next favorite.
@@ -18,8 +17,7 @@
 #
 #   Before running: Phone Link mirror at the LEFT edge of the screen (do not
 #   move the window), TikTok open in the favorites FEED (Profile -> Favorites
-#   -> tap first video), AhaTok floating icon visible on either edge of the
-#   phone screen (the script finds it wherever it sits).
+#   -> tap first video), AhaTok floating icon visible on the left edge.
 #
 #   TO STOP: just move the mouse. Any movement > 60 px aborts the loop.
 #
@@ -27,16 +25,9 @@
 # docked top-left (phone screen spans x 0..459 physical).
 #   Gold bookmark column x=429, standard y~713 (scan +/-80 covers both layouts)
 #   Share icon        = gold bookmark y + 63
-#   Copy link         = auto-detected each cycle: the share-channel row sits at
-#                       y=791 with 6 icon slots (x = 44,118,191,265,338,412);
-#                       TikTok reorders the icons, so the script classifies the
-#                       blue circles by color (Copy link = flat blue R~55-63,
-#                       Facebook = deep blue R~15-20, Email = cyan top) and
-#                       taps the right one; falls back to (-CopyLinkX, -CopyLinkY)
+#   Copy link         = (121, 791) inside the share sheet
 #   Share sheet check = (231, 609)  "Send to" header row, white when open
-#   AhaTok icon       = auto-detected at startup by scanning the left (x=22)
-#                       and right (x=437) edge columns for its pink circle;
-#                       -AhaTokX/-AhaTokY are the fallback if the scan misses
+#   AhaTok icon       = (22, 634)
 #   Scroll point      = (231, 527)
 
 param(
@@ -45,12 +36,12 @@ param(
     [int]$BookmarkY      = 713,   # standard gold bookmark position (anchor)
     [int]$ScanRange      = 80,    # +/- pixels scanned vertically for gold
     [int]$ShareOffsetY   = 63,    # share icon sits this far below the bookmark
-    [int]$CopyLinkX      = 338,   # "Copy link" FALLBACK (auto-detected each cycle; TikTok reorders the row)
-    [int]$CopyLinkY      = 791,   # share-channel row height
+    [int]$CopyLinkX      = 121,   # "Copy link" in the share sheet
+    [int]$CopyLinkY      = 791,
     [int]$SheetCheckX    = 231,   # white pixel here = share sheet is open
     [int]$SheetCheckY    = 609,
-    [int]$AhaTokX        = 437,   # AhaTok floating icon FALLBACK (auto-detected at startup)
-    [int]$AhaTokY        = 369,
+    [int]$AhaTokX        = 22,    # AhaTok floating icon
+    [int]$AhaTokY        = 634,
     [int]$ScrollX        = 231,   # wheel point over the video
     [int]$ScrollY        = 527,
     [int]$AfterShareMs   = 1600,  # share sheet slide-up time
@@ -134,109 +125,15 @@ function Find-GoldY([int]$x, [int]$yCenter, [int]$range) {
     return $null
 }
 
-# Finds the AhaTok floating bubble by scanning vertical edge columns for its
-# pink circle (pale-pink ring + rose inner circle, white arrow in the middle).
-# Returns @{X=..;Y=..} or $null. The bubble snaps to the left or right edge of
-# the phone screen, so only those two columns are scanned.
-function Find-AhaTok {
-    $columns = @(22, 437)   # bubble center when snapped left / right (phone spans x 0..459)
-    $yStart  = 80
-    $yEnd    = 980
-    $h       = $yEnd - $yStart + 1
-
-    foreach ($x in $columns) {
-        $bmp = New-Object System.Drawing.Bitmap(1, $h)
-        $g   = [System.Drawing.Graphics]::FromImage($bmp)
-        $g.CopyFromScreen($x, $yStart, 0, 0, (New-Object System.Drawing.Size(1, $h)))
-        $g.Dispose()
-
-        # collect pink pixels: strong red, but NOT the pure-red of a liked heart
-        # (heart is ~255,44,85 -> G too low) and not white (G too high)
-        $pinks = New-Object System.Collections.Generic.List[int]
-        for ($i = 0; $i -lt $h; $i++) {
-            $p = $bmp.GetPixel(0, $i)
-            if (($p.R -gt 210) -and ($p.G -ge 70) -and ($p.G -le 200) -and ($p.B -ge 80) -and ($p.B -le 215) -and (($p.R - $p.G) -ge 45)) {
-                $pinks.Add($i)
-            }
-        }
-        $bmp.Dispose()
-
-        # cluster the pink pixels (gaps <= 8 px bridge the white arrow),
-        # keep the densest cluster that is bubble-sized (18-55 px tall)
-        $bestCount = 0; $bestMin = 0; $bestMax = 0
-        $curMin = -1; $curMax = -1; $curCount = 0
-        foreach ($i in $pinks) {
-            if ($curMin -lt 0 -or ($i - $curMax) -gt 8) {
-                if ($curCount -gt $bestCount -and ($curMax - $curMin) -ge 18 -and ($curMax - $curMin) -le 55) {
-                    $bestCount = $curCount; $bestMin = $curMin; $bestMax = $curMax
-                }
-                $curMin = $i; $curMax = $i; $curCount = 1
-            } else {
-                $curMax = $i; $curCount++
-            }
-        }
-        if ($curCount -gt $bestCount -and ($curMax - $curMin) -ge 18 -and ($curMax - $curMin) -le 55) {
-            $bestCount = $curCount; $bestMin = $curMin; $bestMax = $curMax
-        }
-
-        if ($bestCount -ge 12) {
-            return @{ X = $x; Y = $yStart + [int](($bestMin + $bestMax) / 2) }
-        }
-    }
-    return $null
-}
-
 function Test-SheetOpen {
     $p = Get-PixelAt $SheetCheckX $SheetCheckY
     return ($p.R -gt 235) -and ($p.G -gt 235) -and ($p.B -gt 235)
-}
-
-# Finds the "Copy link" icon in the open share sheet. TikTok reorders the
-# share-channel row, but the 6 icon slots sit on a fixed grid. Three icons are
-# blue circles, told apart by measured body color (live-calibrated 2026-07):
-#   Copy link -> flat blue, R ~55-63   (e.g. 57,113,248)
-#   Facebook  -> deep blue, R ~15-20   (e.g. 20,119,238)
-#   Email     -> cyan-gradient top, G >= 165 (e.g. 31,204,240)
-# Four ring points are sampled per slot; white glyph pixels are ignored.
-# Returns the slot center X, or $null if nothing matches confidently.
-function Find-CopyLinkX([int]$rowY) {
-    $slots = @(44, 118, 191, 265, 338, 412)
-    $hits = @()
-    foreach ($cx in $slots) {
-        $samples = @(
-            (Get-PixelAt $cx ($rowY - 12)),
-            (Get-PixelAt $cx ($rowY + 12)),
-            (Get-PixelAt ($cx - 12) $rowY),
-            (Get-PixelAt ($cx + 12) $rowY)
-        )
-        $blues = @($samples | Where-Object { $_.B -gt 150 -and $_.B -gt ($_.R + 30) })
-        if ($blues.Count -lt 2) { continue }   # not a blue circle
-
-        $avgR = ($blues | Measure-Object -Property R -Average).Average
-        $avgG = ($blues | Measure-Object -Property G -Average).Average
-
-        if ($avgG -ge 165) { continue }        # Email (cyan gradient)
-        if ($avgR -lt 40)  { continue }        # Facebook (deep blue)
-        $hits += $cx                            # flat blue with R>=40 = Copy link
-    }
-    if ($hits.Count -eq 1) { return $hits[0] }
-    return $null
 }
 
 Write-Host ""
 Write-Host ("TikTok download + unsave: {0} videos. Starting in {1}s - keep hands off the mouse." -f $Count, $StartDelaySec) -ForegroundColor Yellow
 Write-Host "(Change the number with:  .\SaveAndUnsave-TikTokFavorites.ps1 -Count <n>)"
 Start-Sleep -Seconds $StartDelaySec
-
-# locate the AhaTok bubble (it snaps to either edge and gets dragged around)
-$aha = Find-AhaTok
-if ($null -ne $aha) {
-    $AhaTokX = $aha.X
-    $AhaTokY = $aha.Y
-    Write-Host ("AhaTok bubble found at {0},{1}." -f $AhaTokX, $AhaTokY) -ForegroundColor Cyan
-} else {
-    Write-Host ("AhaTok bubble NOT found by scan - using fallback {0},{1}. If downloads don't start, abort and check the bubble is visible." -f $AhaTokX, $AhaTokY) -ForegroundColor Red
-}
 Write-Host "MOVE THE MOUSE AT ANY TIME TO STOP." -ForegroundColor Yellow
 Write-Host ""
 
@@ -293,13 +190,8 @@ while (($done -lt $Count) -and ($iter -lt $maxIter)) {
         continue
     }
 
-    # 2. copy link (sheet closes on its own) - find the icon, TikTok reorders the row
-    $clX = Find-CopyLinkX $CopyLinkY
-    if ($null -eq $clX) {
-        Write-Host ("copy-link icon not identified - using fallback x={0}" -f $CopyLinkX) -ForegroundColor DarkYellow
-        $clX = $CopyLinkX
-    }
-    Click-At $clX $CopyLinkY
+    # 2. copy link (sheet closes on its own)
+    Click-At $CopyLinkX $CopyLinkY
     Start-Sleep -Milliseconds $AfterCopyMs
 
     # 3. AhaTok grabs the link and queues the download
