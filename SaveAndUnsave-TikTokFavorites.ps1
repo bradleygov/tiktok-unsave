@@ -27,7 +27,12 @@
 # docked top-left (phone screen spans x 0..459 physical).
 #   Gold bookmark column x=429, standard y~713 (scan +/-80 covers both layouts)
 #   Share icon        = gold bookmark y + 63
-#   Copy link         = (121, 791) inside the share sheet
+#   Copy link         = auto-detected each cycle: the share-channel row sits at
+#                       y=791 with 6 icon slots (x = 44,118,191,265,338,412);
+#                       TikTok reorders the icons, so the script classifies the
+#                       blue circles by color (Copy link = cyan-gradient top,
+#                       Email = flat blue, Facebook = dark blue) and taps the
+#                       right one; falls back to (-CopyLinkX, -CopyLinkY)
 #   Share sheet check = (231, 609)  "Send to" header row, white when open
 #   AhaTok icon       = auto-detected at startup by scanning the left (x=22)
 #                       and right (x=437) edge columns for its pink circle;
@@ -40,8 +45,8 @@ param(
     [int]$BookmarkY      = 713,   # standard gold bookmark position (anchor)
     [int]$ScanRange      = 80,    # +/- pixels scanned vertically for gold
     [int]$ShareOffsetY   = 63,    # share icon sits this far below the bookmark
-    [int]$CopyLinkX      = 121,   # "Copy link" in the share sheet
-    [int]$CopyLinkY      = 791,
+    [int]$CopyLinkX      = 338,   # "Copy link" FALLBACK (auto-detected each cycle; TikTok reorders the row)
+    [int]$CopyLinkY      = 791,   # share-channel row height
     [int]$SheetCheckX    = 231,   # white pixel here = share sheet is open
     [int]$SheetCheckY    = 609,
     [int]$AhaTokX        = 437,   # AhaTok floating icon FALLBACK (auto-detected at startup)
@@ -186,6 +191,33 @@ function Test-SheetOpen {
     return ($p.R -gt 235) -and ($p.G -gt 235) -and ($p.B -gt 235)
 }
 
+# Finds the "Copy link" icon in the open share sheet. TikTok reorders the
+# share-channel row, but the 6 icon slots sit on a fixed grid. Three icons are
+# blue circles; they are told apart by the pixel 12 px ABOVE the icon center:
+#   Copy link -> cyan-gradient top (high G, high B)
+#   Email     -> flat medium blue
+#   Facebook  -> dark blue (very low R)
+# Returns the slot center X, or $null if nothing matches confidently.
+function Find-CopyLinkX([int]$rowY) {
+    $slots = @(44, 118, 191, 265, 338, 412)
+    $candidates = @()
+    foreach ($cx in $slots) {
+        $top  = Get-PixelAt $cx ($rowY - 12)
+        $left = Get-PixelAt ($cx - 12) $rowY
+        # blue circle? (check two ring points so the white glyph can't fool us)
+        $topBlue  = ($top.B  -gt 150) -and ($top.B  -gt ($top.R  + 30))
+        $leftBlue = ($left.B -gt 150) -and ($left.B -gt ($left.R + 30))
+        if ($topBlue -and $leftBlue) {
+            $candidates += ,@($cx, $top)
+        }
+    }
+    # Copy link: gradient makes its top noticeably cyan (G high), unlike Email
+    # (G mid) and Facebook (R very low, deep blue)
+    $hits = @($candidates | Where-Object { $_[1].G -ge 165 -and $_[1].R -ge 45 })
+    if ($hits.Count -eq 1) { return $hits[0][0] }
+    return $null
+}
+
 Write-Host ""
 Write-Host ("TikTok download + unsave: {0} videos. Starting in {1}s - keep hands off the mouse." -f $Count, $StartDelaySec) -ForegroundColor Yellow
 Write-Host "(Change the number with:  .\SaveAndUnsave-TikTokFavorites.ps1 -Count <n>)"
@@ -256,8 +288,13 @@ while (($done -lt $Count) -and ($iter -lt $maxIter)) {
         continue
     }
 
-    # 2. copy link (sheet closes on its own)
-    Click-At $CopyLinkX $CopyLinkY
+    # 2. copy link (sheet closes on its own) - find the icon, TikTok reorders the row
+    $clX = Find-CopyLinkX $CopyLinkY
+    if ($null -eq $clX) {
+        Write-Host ("copy-link icon not identified - using fallback x={0}" -f $CopyLinkX) -ForegroundColor DarkYellow
+        $clX = $CopyLinkX
+    }
+    Click-At $clX $CopyLinkY
     Start-Sleep -Milliseconds $AfterCopyMs
 
     # 3. AhaTok grabs the link and queues the download
