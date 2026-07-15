@@ -30,9 +30,9 @@
 #   Copy link         = auto-detected each cycle: the share-channel row sits at
 #                       y=791 with 6 icon slots (x = 44,118,191,265,338,412);
 #                       TikTok reorders the icons, so the script classifies the
-#                       blue circles by color (Copy link = cyan-gradient top,
-#                       Email = flat blue, Facebook = dark blue) and taps the
-#                       right one; falls back to (-CopyLinkX, -CopyLinkY)
+#                       blue circles by color (Copy link = flat blue R~55-63,
+#                       Facebook = deep blue R~15-20, Email = cyan top) and
+#                       taps the right one; falls back to (-CopyLinkX, -CopyLinkY)
 #   Share sheet check = (231, 609)  "Send to" header row, white when open
 #   AhaTok icon       = auto-detected at startup by scanning the left (x=22)
 #                       and right (x=437) edge columns for its pink circle;
@@ -193,28 +193,33 @@ function Test-SheetOpen {
 
 # Finds the "Copy link" icon in the open share sheet. TikTok reorders the
 # share-channel row, but the 6 icon slots sit on a fixed grid. Three icons are
-# blue circles; they are told apart by the pixel 12 px ABOVE the icon center:
-#   Copy link -> cyan-gradient top (high G, high B)
-#   Email     -> flat medium blue
-#   Facebook  -> dark blue (very low R)
+# blue circles, told apart by measured body color (live-calibrated 2026-07):
+#   Copy link -> flat blue, R ~55-63   (e.g. 57,113,248)
+#   Facebook  -> deep blue, R ~15-20   (e.g. 20,119,238)
+#   Email     -> cyan-gradient top, G >= 165 (e.g. 31,204,240)
+# Four ring points are sampled per slot; white glyph pixels are ignored.
 # Returns the slot center X, or $null if nothing matches confidently.
 function Find-CopyLinkX([int]$rowY) {
     $slots = @(44, 118, 191, 265, 338, 412)
-    $candidates = @()
+    $hits = @()
     foreach ($cx in $slots) {
-        $top  = Get-PixelAt $cx ($rowY - 12)
-        $left = Get-PixelAt ($cx - 12) $rowY
-        # blue circle? (check two ring points so the white glyph can't fool us)
-        $topBlue  = ($top.B  -gt 150) -and ($top.B  -gt ($top.R  + 30))
-        $leftBlue = ($left.B -gt 150) -and ($left.B -gt ($left.R + 30))
-        if ($topBlue -and $leftBlue) {
-            $candidates += ,@($cx, $top)
-        }
+        $samples = @(
+            (Get-PixelAt $cx ($rowY - 12)),
+            (Get-PixelAt $cx ($rowY + 12)),
+            (Get-PixelAt ($cx - 12) $rowY),
+            (Get-PixelAt ($cx + 12) $rowY)
+        )
+        $blues = @($samples | Where-Object { $_.B -gt 150 -and $_.B -gt ($_.R + 30) })
+        if ($blues.Count -lt 2) { continue }   # not a blue circle
+
+        $avgR = ($blues | Measure-Object -Property R -Average).Average
+        $avgG = ($blues | Measure-Object -Property G -Average).Average
+
+        if ($avgG -ge 165) { continue }        # Email (cyan gradient)
+        if ($avgR -lt 40)  { continue }        # Facebook (deep blue)
+        $hits += $cx                            # flat blue with R>=40 = Copy link
     }
-    # Copy link: gradient makes its top noticeably cyan (G high), unlike Email
-    # (G mid) and Facebook (R very low, deep blue)
-    $hits = @($candidates | Where-Object { $_[1].G -ge 165 -and $_[1].R -ge 45 })
-    if ($hits.Count -eq 1) { return $hits[0][0] }
+    if ($hits.Count -eq 1) { return $hits[0] }
     return $null
 }
 
