@@ -25,7 +25,11 @@
 # docked top-left (phone screen spans x 0..459 physical).
 #   Gold bookmark column x=429, standard y~713 (scan +/-80 covers both layouts)
 #   Share icon        = gold bookmark y + 63
-#   Copy link         = (121, 791) inside the share sheet
+#   Copy link         = found automatically: the row at y=791 is scanned for
+#                       the Copy link icon's blue circle (RGB ~57,113,248 -
+#                       distinct from Facebook's ~20,119,238 and Email's cyan);
+#                       TikTok shuffles the icon left/right between videos.
+#                       (-CopyLinkX, -CopyLinkY) is only the fallback.
 #   Share sheet check = (231, 609)  "Send to" header row, white when open
 #   AhaTok icon       = (22, 634)
 #   Scroll point      = (231, 527)
@@ -36,8 +40,8 @@ param(
     [int]$BookmarkY      = 713,   # standard gold bookmark position (anchor)
     [int]$ScanRange      = 80,    # +/- pixels scanned vertically for gold
     [int]$ShareOffsetY   = 63,    # share icon sits this far below the bookmark
-    [int]$CopyLinkX      = 121,   # "Copy link" in the share sheet
-    [int]$CopyLinkY      = 791,
+    [int]$CopyLinkX      = 121,   # "Copy link" FALLBACK if the icon scan fails
+    [int]$CopyLinkY      = 791,   # share-channel row height (icon is scanned along this row)
     [int]$SheetCheckX    = 231,   # white pixel here = share sheet is open
     [int]$SheetCheckY    = 609,
     [int]$AhaTokX        = 22,    # AhaTok floating icon
@@ -130,6 +134,51 @@ function Test-SheetOpen {
     return ($p.R -gt 235) -and ($p.G -gt 235) -and ($p.B -gt 235)
 }
 
+# Finds the "Copy link" icon anywhere along the share-channel row by looking
+# for its blue circle. Measured colors (2026-07): Copy link body = flat blue
+# around (57,113,248); Facebook = deep blue ~(20,119,238) (red too low);
+# Email = cyan-gradient ~(31,204,240) (green too high). The white chain glyph
+# sits mid-circle, so the circle shows as two blue arcs on the scan line -
+# a sliding window counts blue columns and picks the densest spot.
+# Returns the icon center X, or $null if no confident match.
+function Find-CopyLinkX([int]$rowY) {
+    $x0 = 20; $x1 = 445
+    $w  = $x1 - $x0 + 1
+    $rows = @($rowY - 10, $rowY, $rowY + 10)   # three scan lines across the circle
+
+    $bmp = New-Object System.Drawing.Bitmap($w, 1)
+    $isBlue = New-Object bool[] $w
+    foreach ($ry in $rows) {
+        $g = [System.Drawing.Graphics]::FromImage($bmp)
+        $g.CopyFromScreen($x0, $ry, 0, 0, (New-Object System.Drawing.Size($w, 1)))
+        $g.Dispose()
+        for ($i = 0; $i -lt $w; $i++) {
+            $p = $bmp.GetPixel($i, 0)
+            # Copy-link blue: mid red, mid green, strong blue
+            if (($p.R -ge 40) -and ($p.R -le 95) -and ($p.G -ge 90) -and ($p.G -le 145) -and ($p.B -ge 210)) {
+                $isBlue[$i] = $true
+            }
+        }
+    }
+    $bmp.Dispose()
+
+    # slide a circle-wide window; the icon is ~44 px across
+    $win = 44
+    $bestX = -1; $bestCount = 0
+    $count = 0
+    for ($i = 0; $i -lt $w; $i++) {
+        if ($isBlue[$i]) { $count++ }
+        if ($i -ge $win -and $isBlue[$i - $win]) { $count-- }
+        if ($i -ge ($win - 1) -and $count -gt $bestCount) {
+            $bestCount = $count
+            $bestX = $x0 + $i - [int]($win / 2)
+        }
+    }
+
+    if ($bestCount -ge 14) { return $bestX }
+    return $null
+}
+
 Write-Host ""
 Write-Host ("TikTok download + unsave: {0} videos. Starting in {1}s - keep hands off the mouse." -f $Count, $StartDelaySec) -ForegroundColor Yellow
 Write-Host "(Change the number with:  .\SaveAndUnsave-TikTokFavorites.ps1 -Count <n>)"
@@ -190,8 +239,13 @@ while (($done -lt $Count) -and ($iter -lt $maxIter)) {
         continue
     }
 
-    # 2. copy link (sheet closes on its own)
-    Click-At $CopyLinkX $CopyLinkY
+    # 2. copy link (sheet closes on its own) - scan the row, the icon moves around
+    $clX = Find-CopyLinkX $CopyLinkY
+    if ($null -eq $clX) {
+        Write-Host ("copy-link icon not found on the row - using fallback x={0}" -f $CopyLinkX) -ForegroundColor DarkYellow
+        $clX = $CopyLinkX
+    }
+    Click-At $clX $CopyLinkY
     Start-Sleep -Milliseconds $AfterCopyMs
 
     # 3. AhaTok grabs the link and queues the download
